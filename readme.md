@@ -1,4 +1,4 @@
-# Cahier des Charges – Écosystème Orange Bank  
+# Cahier des Charges – Écosystème Orion Bank  
 **Stack : Django + Flask + FastAPI + Apache Kafka**  
 **Architecture microservices & événements**
 
@@ -7,7 +7,7 @@
 ## 1. Contexte & Objectifs
 
 **Contexte :**  
-Orange Bank souhaite une plateforme **scalable**, **sécurisée** et **événementielle** pour gérer comptes, paiements, KYC/AML et reporting temps réel.
+Orion Bank souhaite une plateforme **scalable**, **sécurisée** et **événementielle** pour gérer comptes, paiements, KYC/AML et reporting temps réel.
 
 **Objectifs :**
 - Architecture **microservices** avec interactions asynchrones via **Kafka**.
@@ -31,7 +31,7 @@ Orange Bank souhaite une plateforme **scalable**, **sécurisée** et **événeme
    - Dépôt, retrait, transfert P2P, paiement marchand.
    - Idempotence, compensation, réconciliation.
 4. **Moyens de paiement**
-   - **Orange Money**, cartes, QR code.
+   - **Orion Money**, cartes, QR code.
 5. **Tarification & Fees**
    - Frais dynamiques par type d’opération.
 6. **Conformité AML/CFT**
@@ -52,7 +52,7 @@ Orange Bank souhaite une plateforme **scalable**, **sécurisée** et **événeme
 - **FastAPI — Core Banking Services**
   - Comptes, transactions, ledger, anti-fraude.
 - **Flask — Gateways**
-  - Orange Money, PSP cartes, opérateurs tiers.
+  - Orion Money, PSP cartes, opérateurs tiers.
 - **Django — Back-office**
   - Admin, KYC, litiges, reporting.
 
@@ -83,7 +83,7 @@ Orange Bank souhaite une plateforme **scalable**, **sécurisée** et **événeme
 
 ### 4.2 Flask — Gateways
 
-- **Orange Money Gateway** : initier paiements, webhooks sécurisés.
+- **Orion Money Gateway** : initier paiements, webhooks sécurisés.
 - **Card PSP Gateway** : tokenisation, autorisation, refunds.
 - **KYC/AML Gateway** : OCR, screening sanctions.
 - **BillPay Gateway** : factures, marchands.
@@ -131,7 +131,7 @@ Orange Bank souhaite une plateforme **scalable**, **sécurisée** et **événeme
 - `transaction.initiated.v1`
 - `transaction.settled.v1`
 - `transaction.failed.v1`
-- `webhook.orangemoney.payment.v1`
+- `webhook.Orionmoney.payment.v1`
 
 ### Schéma Avro Exemple
 
@@ -139,7 +139,7 @@ Orange Bank souhaite une plateforme **scalable**, **sécurisée** et **événeme
 {
   "type": "record",
   "name": "TransactionSettled",
-  "namespace": "orange.bank",
+  "namespace": "Orion.bank",
   "fields": [
     {"name": "transaction_id", "type": "string"},
     {"name": "amount", "type": "string"},
@@ -176,8 +176,8 @@ GET /v1/transactions/{id}
 ### Flask (Gateways)
 
 ```
-POST /v1/gw/orangemoney/initiate
-POST /v1/gw/orangemoney/webhook
+POST /v1/gw/Orionmoney/initiate
+POST /v1/gw/Orionmoney/webhook
 POST /v1/gw/card/authorize
 ```
 
@@ -249,11 +249,11 @@ GET /admin/reports/transactions
 
 ## 12. Flux Critiques (Exemple)
 
-**Paiement marchand via Orange Money :**
+**Paiement marchand via Orion Money :**
 
-1. Front → `POST /gw/orangemoney/initiate`.
+1. Front → `POST /gw/Orionmoney/initiate`.
 2. Flask initie paiement OM → publie `transaction.initiated`.
-3. Webhook OM → Flask → publie `webhook.orangemoney.payment`.
+3. Webhook OM → Flask → publie `webhook.Orionmoney.payment`.
 4. FastAPI consomme, applique SAGA : débite wallet, crédite marchand.
 5. Django Back-office met à jour dashboards.
 6. Notification SMS/Email via Kafka.
