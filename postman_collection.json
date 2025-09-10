@@ -1,0 +1,372 @@
+{
+  "info": {
+    "_postman_id": "2c2db1bb-7b2a-4b62-9d5e-3b2e6e3a0ab1",
+    "name": "Orion Bank – E2E (Backoffice + Core + Gateways)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Collection complète pour tester l'écosystème Orion Bank (Django Backoffice, FastAPI Core, Flask Gateways, Kafka side-effects via outbox)."
+  },
+  "variable": [
+    { "key": "host", "value": "http://localhost", "type": "string" },
+    { "key": "backoffice_port", "value": "8001", "type": "string" },
+    { "key": "core_port", "value": "8000", "type": "string" },
+    { "key": "gateways_port", "value": "7000", "type": "string" },
+    { "key": "api_key", "value": "super-secret-admin-key", "type": "string" },
+    { "key": "webhook_secret", "value": "replace-me", "type": "string" },
+    { "key": "currency", "value": "XOF", "type": "string" },
+    { "key": "amount_small", "value": "1000.00", "type": "string" },
+    { "key": "payer_msisdn", "value": "770000000", "type": "string" },
+    { "key": "document_no", "value": "DOC-001", "type": "string" },
+    { "key": "customer_id", "value": "" , "type": "string" },
+    { "key": "account_id_1", "value": "", "type": "string" },
+    { "key": "account_id_2", "value": "", "type": "string" },
+    { "key": "transaction_id", "value": "", "type": "string" },
+    { "key": "idempotency_key", "value": "", "type": "string" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Génère au besoin des UUIDs et un Idempotency-Key",
+          "if (!pm.collectionVariables.get('customer_id')) {",
+          "  pm.collectionVariables.set('customer_id', crypto.randomUUID());",
+          "}",
+          "if (!pm.collectionVariables.get('idempotency_key')) {",
+          "  pm.collectionVariables.set('idempotency_key', crypto.randomUUID());",
+          "}",
+          "// Timestamp ISO pour le webhook",
+          "pm.collectionVariables.set('ts_iso', new Date().toISOString());"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Petit helper global: check < 2s",
+          "pm.test('Temps de réponse < 2000 ms', function () {",
+          "  pm.expect(pm.response.responseTime).to.be.below(2000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "0) Sanity / Health",
+      "item": [
+        {
+          "name": "Backoffice Swagger UI",
+          "request": {
+            "method": "GET",
+            "url": "{{host}}:{{backoffice_port}}/api/docs/"
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('HTTP 200', () => pm.response.to.be.ok);"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Core Health",
+          "request": { "method": "GET", "url": "{{host}}:{{core_port}}/v1/health/" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('HTTP 200', () => pm.response.to.be.ok);",
+            "pm.test('status = ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Gateways Health",
+          "request": { "method": "GET", "url": "{{host}}:{{gateways_port}}/v1/health" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('HTTP 200', () => pm.response.to.be.ok);",
+            "pm.test('status = ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+          ], "type": "text/javascript" } }]
+        }
+      ]
+    },
+    {
+      "name": "1) Backoffice (Django)",
+      "item": [
+        {
+          "name": "OpenAPI JSON",
+          "request": { "method": "GET", "url": "{{host}}:{{backoffice_port}}/api/schema/" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('HTTP 200', () => pm.response.to.be.ok);",
+            "pm.test('schema present', () => pm.expect(pm.response.json()).to.have.property('openapi'));"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Reporting – Transactions",
+          "request": { "method": "GET", "url": "{{host}}:{{backoffice_port}}/api/reporting/transactions/" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('HTTP 200', () => pm.response.to.be.ok);",
+            "const j = pm.response.json();",
+            "pm.test('has count & currency', () => {",
+            "  pm.expect(j).to.have.property('count');",
+            "  pm.expect(j).to.have.property('currency');",
+            "});"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "KYC – List",
+          "request": { "method": "GET", "url": "{{host}}:{{backoffice_port}}/api/kyc/cases/" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('HTTP 200', () => pm.response.to.be.ok);"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "KYC – Create",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{host}}:{{backoffice_port}}/api/kyc/cases/",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_id\": \"{{customer_id}}\",\n  \"document_no\": \"{{document_no}}\",\n  \"status\": \"pending\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('201/200', () => pm.expect([200,201]).to.include(pm.response.code));",
+            "const j = pm.response.json();",
+            "pm.test('id present', () => pm.expect(j).to.have.property('id'));",
+            "pm.collectionVariables.set('kyc_id', j.id);"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Disputes – Create",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{host}}:{{backoffice_port}}/api/disputes/cases/",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{$guid}}\",\n  \"transaction_id\": \"{{$guid}}\",\n  \"reason\": \"merchant dispute\",\n  \"status\": \"open\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('201/200', () => pm.expect([200,201]).to.include(pm.response.code));",
+            "pm.collectionVariables.set('dispute_id', pm.response.json().id);"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Tariffs – Create",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{host}}:{{backoffice_port}}/api/tariffs/",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{$guid}}\",\n  \"operation\": \"transfer_wallet\",\n  \"channel\": \"wallet\",\n  \"fixed\": \"0.00\",\n  \"percent\": \"1.50\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('201/200', () => pm.expect([200,201]).to.include(pm.response.code));"
+          ], "type": "text/javascript" } }]
+        }
+      ]
+    },
+    {
+      "name": "2) Core (FastAPI)",
+      "item": [
+        {
+          "name": "Accounts – Create #1",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{host}}:{{core_port}}/v1/accounts/",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_id\": \"{{customer_id}}\",\n  \"type\": \"wallet\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('201/200', () => pm.expect([200,201]).to.include(pm.response.code));",
+            "const j = pm.response.json();",
+            "pm.collectionVariables.set('account_id_1', j.id);",
+            "pm.test('has id', () => pm.expect(j).to.have.property('id'));"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Accounts – Create #2",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{host}}:{{core_port}}/v1/accounts/",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_id\": \"{{$guid}}\",\n  \"type\": \"wallet\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('201/200', () => pm.expect([200,201]).to.include(pm.response.code));",
+            "pm.collectionVariables.set('account_id_2', pm.response.json().id);"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Accounts – Get Balance #1",
+          "request": { "method": "GET", "url": "{{host}}:{{core_port}}/v1/accounts/{{account_id_1}}/balance" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('200', () => pm.response.to.be.ok);",
+            "pm.test('has balance_available', () => pm.expect(pm.response.json()).to.have.property('balance_available'));"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Transactions – Transfer (idempotent)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nouveau Idempotency-Key pour ce call",
+                  "pm.variables.set('idem_key', crypto.randomUUID());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 ou 400 (fonds insuff.)', () => pm.expect([200,400]).to.include(pm.response.code));",
+                  "if (pm.response.code === 200) {",
+                  "  const j = pm.response.json();",
+                  "  pm.collectionVariables.set('transaction_id', j.transaction_id);",
+                  "  pm.test('status settled', () => pm.expect(j.status).to.eql('settled'));",
+                  "}",
+                  "// Rejoue la même requête (idempotence) via test script de suivi ? Ici on valide seulement la première réponse.",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{idem_key}}" }
+            ],
+            "url": "{{host}}:{{core_port}}/v1/transactions/transfer",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_debit\": \"{{account_id_1}}\",\n  \"account_credit\": \"{{account_id_2}}\",\n  \"amount\": \"{{amount_small}}\",\n  \"channel\": \"wallet\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3) Gateways (Flask)",
+      "item": [
+        {
+          "name": "OrionMoney – Initiate Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-API-Key", "value": "{{api_key}}" }
+            ],
+            "url": "{{host}}:{{gateways_port}}/v1/gw/orionmoney/initiate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payer_msisdn\": \"{{payer_msisdn}}\",\n  \"amount\": \"{{amount_small}}\",\n  \"currency\": \"{{currency}}\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('200', () => pm.response.to.be.ok);",
+            "const j = pm.response.json();",
+            "pm.test('has payment_id', () => pm.expect(j).to.have.property('payment_id'));",
+            "pm.collectionVariables.set('payment_id', j.payment_id);"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "OrionMoney – Webhook (HMAC signé)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Calcul de X-Signature = base64(HMAC_SHA256(ts + '.' + body))",
+                  "const ts = pm.collectionVariables.get('ts_iso') || new Date().toISOString();",
+                  "pm.variables.set('ts_now', ts);",
+                  "const body = JSON.stringify({",
+                  "  payment_id: pm.collectionVariables.get('payment_id') || 'pm_123',",
+                  "  status: 'success',",
+                  "  amount: pm.collectionVariables.get('amount_small') || '2500.00',",
+                  "  currency: pm.collectionVariables.get('currency') || 'XOF'",
+                  "});",
+                  "pm.variables.set('webhook_body', body);",
+                  "const secret = pm.collectionVariables.get('webhook_secret') || 'replace-me';",
+                  "const msg = ts + '.' + body;",
+                  "const hmac = CryptoJS.HmacSHA256(msg, secret);",
+                  "const b64 = CryptoJS.enc.Base64.stringify(hmac);",
+                  "pm.variables.set('webhook_sig', b64);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.be.ok);",
+                  "pm.test('accepted', () => pm.expect(pm.response.json().status).to.eql('accepted'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Timestamp", "value": "{{ts_now}}" },
+              { "key": "X-Signature", "value": "{{webhook_sig}}" }
+            ],
+            "url": "{{host}}:{{gateways_port}}/v1/gw/orionmoney/webhook",
+            "body": { "mode": "raw", "raw": "{{webhook_body}}" }
+          }
+        },
+        {
+          "name": "Card PSP – Authorize",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-API-Key", "value": "{{api_key}}" }
+            ],
+            "url": "{{host}}:{{gateways_port}}/v1/gw/card/authorize",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"tok_abc\",\n  \"amount\": \"{{amount_small}}\",\n  \"currency\": \"{{currency}}\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('200', () => pm.response.to.be.ok);",
+            "pm.test('approved', () => pm.expect(pm.response.json().status).to.eql('approved'));"
+          ], "type": "text/javascript" } }]
+        },
+        {
+          "name": "KYC – Screen",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-API-Key", "value": "{{api_key}}" }
+            ],
+            "url": "{{host}}:{{gateways_port}}/v1/gw/kyc/screen",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"Jane Doe\",\n  \"document_no\": \"{{document_no}}\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "pm.test('200', () => pm.response.to.be.ok);",
+            "pm.test('has score', () => pm.expect(pm.response.json()).to.have.property('score'));"
+          ], "type": "text/javascript" } }]
+        }
+      ]
+    }
+  ]
+}

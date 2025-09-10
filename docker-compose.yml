@@ -1,0 +1,283 @@
+version: "3.9"
+
+name: orion-fullstack
+
+volumes:
+  pg_data:
+
+services:
+  # =========================
+  # Infra: DB / Cache / Kafka
+  # =========================
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orion}
+      POSTGRES_DB: ${POSTGRES_DB:-orion}  # DB par défaut
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orion} -d ${POSTGRES_DB:-orion}"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    restart: unless-stopped
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+    ports:
+      - "${ZOOKEEPER_PORT:-2181}:2181"
+    healthcheck:
+      test: [ "CMD-SHELL", "/opt/bitnami/zookeeper/bin/zkCli.sh -server 127.0.0.1:2181 ls / >/dev/null 2>&1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+
+  kafka:
+    image: bitnami/kafka:3.7
+    restart: unless-stopped
+    environment:
+      KAFKA_ENABLE_KRAFT: "no"
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_BROKER_ID: 1
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://${KAFKA_HOST_PUBLIC:-localhost}:29092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    depends_on:
+      zookeeper:
+        condition: service_started
+    ports:
+      - "${KAFKA_PORT_INTERNAL:-9092}:9092"   # inter-containers
+      - "${KAFKA_PORT_EXTERNAL:-29092}:29092" # depuis l'hôte
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 7s
+      timeout: 5s
+      retries: 60
+
+  kafka-init:
+    image: bitnami/kafka:3.7
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      KAFKA_DEFAULT_TOPICS: ${KAFKA_DEFAULT_TOPICS:-customer.created.v1,kyc.updated.v1,account.opened.v1,transaction.initiated.v1,transaction.settled.v1,transaction.failed.v1,webhook.Orionmoney.payment.v1,core.outbox.events,gateways.dlq}
+    entrypoint: [ "/bin/bash","-lc" ]
+    command: |
+      set -e
+      BOOT="$${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}"
+      IFS="," read -ra TOPICS <<< "$${KAFKA_DEFAULT_TOPICS}"
+      for t in "$${TOPICS[@]}"; do
+        echo "Creating topic: $$t"
+        /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --topic "$$t" --bootstrap-server "$$BOOT" --replication-factor 1 --partitions 3
+      done
+      echo "Kafka topics created ✔"
+    restart: "no"
+
+
+  # =======================
+  # DB bootstrap & migrations
+  # =======================
+  db-init:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-orion}
+      POSTGRES_USER: ${POSTGRES_USER:-orion}
+      POSTGRES_DB: ${POSTGRES_DB:-orion}
+      DB_BACKOFFICE: ${DB_BACKOFFICE:-orion_backoffice}
+      DB_CORE: ${DB_CORE:-orion_core}
+      DB_GATEWAYS: ${DB_GATEWAYS:-orion_gateways}
+    entrypoint: [ "/bin/sh","-lc" ]
+    command: |
+      set -e
+      until pg_isready -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"; do sleep 1; done
+      for DB in "$$DB_BACKOFFICE" "$$DB_CORE" "$$DB_GATEWAYS"; do
+        echo "Ensuring database $$DB exists..."
+        psql -h postgres -U "$$POSTGRES_USER" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '$$DB';" | grep -q 1 \
+          || psql -h postgres -U "$$POSTGRES_USER" -d postgres -c "CREATE DATABASE $$DB;"
+      done
+      echo "Databases ready ✔"
+    restart: "no"
+
+
+  core-migrate:
+    image: postgres:16-alpine
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-orion}
+      POSTGRES_USER: ${POSTGRES_USER:-orion}
+      CORE_DB: ${DB_CORE:-orion_core}
+    volumes:
+      - ./core/migrations:/migrations:ro
+    entrypoint: [ "/bin/sh","-lc" ]
+    command: |
+      set -e
+      until pg_isready -h postgres -U "$$POSTGRES_USER" -d "$$CORE_DB"; do sleep 1; done
+      psql -h postgres -U "$$POSTGRES_USER" -d "$$CORE_DB" -f /migrations/001_init.sql
+      echo "Core DB migrated ✔"
+    restart: "no"
+
+
+  gateways-migrate:
+    image: postgres:16-alpine
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-orion}
+      POSTGRES_USER: ${POSTGRES_USER:-orion}
+      GW_DB: ${DB_GATEWAYS:-orion_gateways}
+    volumes:
+      - ./gateways/migrations:/migrations:ro
+    entrypoint: [ "/bin/sh","-lc" ]
+    command: |
+      set -e
+      until pg_isready -h postgres -U "$$POSTGRES_USER" -d "$$GW_DB"; do sleep 1; done
+      psql -h postgres -U "$$POSTGRES_USER" -d "$$GW_DB" -f /migrations/001_init.sql
+      echo "Gateways DB migrated ✔"
+    restart: "no"
+
+
+  # =========
+  # Applications
+  # =========
+  backoffice:
+    build:
+      context: ./backoffice
+      dockerfile: Dockerfile
+    env_file: [.env]
+    environment:
+      # DB (Django lit ces env-là dans settings.py)
+      DB_NAME: ${DB_BACKOFFICE:-orion_backoffice}
+      DB_USER: ${POSTGRES_USER:-orion}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-orion}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      # Django
+      DJANGO_SETTINGS_MODULE: backoffice.settings
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-True}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-super-secret}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-*}
+      # Superuser auto
+      DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME:-admin}
+      DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL:-admin@example.com}
+      DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD:-admin123}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./backoffice:/app
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-migrate:
+        condition: service_completed_successfully
+      gateways-migrate:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "${BACKOFFICE_PORT:-8001}:8001"
+    command: >
+      bash -lc "
+      python manage.py migrate &&
+      python manage.py createsuperuser --noinput || true &&
+      gunicorn backoffice.wsgi:application -b 0.0.0.0:8001 -w ${GUNICORN_WORKERS:-3}
+      "
+
+  core:
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+    env_file: [.env]
+    environment:
+      APP_PORT: 8000
+      # DB DSN est construit à partir de .env par pydantic-settings
+      DB_USER: ${POSTGRES_USER:-orion}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-orion}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_CORE:-orion_core}
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      KAFKA_CLIENT_ID: core-banking
+      KAFKA_OUTBOX_TOPIC: core.outbox.events
+      KAFKA_DLQ_TOPIC: core.outbox.dlq
+    volumes:
+      - ./core:/app
+    working_dir: /app
+    depends_on:
+      core-migrate:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+    ports:
+      - "${CORE_PORT:-8000}:8000"
+    command: >
+      bash -lc "
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2}
+      "
+
+  gateways:
+    build:
+      context: ./gateways
+      dockerfile: Dockerfile
+    env_file: [.env]
+    environment:
+      APP_PORT: 7000
+      # DB
+      DB_USER: ${POSTGRES_USER:-orion}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-orion}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_GATEWAYS:-orion_gateways}
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      KAFKA_CLIENT_ID: gateways
+      KAFKA_DLQ_TOPIC: gateways.dlq
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./gateways:/app
+    working_dir: /app
+    depends_on:
+      gateways-migrate:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+    ports:
+      - "${GATEWAYS_PORT:-7000}:7000"
+    command: >
+      bash -lc "
+      gunicorn app.wsgi:app -b 0.0.0.0:7000 -w ${GUNICORN_WORKERS:-2}
+      "

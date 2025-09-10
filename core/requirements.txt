@@ -1,0 +1,57 @@
+﻿# === Django Backoffice ===
+Django==5.1.1
+djangorestframework==3.15.2
+drf-spectacular==0.27.2
+django-cors-headers==4.4.0
+django-filter==24.3
+django-environ==0.11.2
+python-dotenv==1.0.1
+psycopg2-binary
+dj-database-url==2.2.0
+django-extensions==3.2.3
+django-debug-toolbar==4.3.0
+
+# === Core (FastAPI) ===
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+httpx==0.28.1
+
+# === Gateways (Flask) ===
+Flask==3.0.3
+Flask-RESTful==0.3.10
+Flask-Cors==5.0.0
+flasgger==0.9.7.1
+gunicorn==23.0.0
+requests==2.32.3
+python-dateutil==2.9.0.post0
+
+# === DB & ORM (Core/Gateways) ===
+SQLAlchemy==2.0.35
+asyncpg
+
+# === Kafka & Messaging ===
+confluent-kafka==2.5.0
+aiokafka==0.10.0
+celery==5.4.0
+redis==5.1.1
+
+# === Sécurité & Auth ===
+cryptography==43.0.1
+PyJWT==2.9.0
+djangorestframework-simplejwt==5.3.1
+passlib==1.7.4
+
+# === Logs & Observabilité ===
+structlog==24.2.0
+sentry-sdk==2.13.0
+
+# === Tests & Qualité (si tu veux les garder dans la même prod list) ===
+pytest==8.3.3
+pytest-django==4.9.0
+factory-boy==3.3.1
+faker==30.8.1
+black==24.8.0
+isort==5.13.2
+flake8==7.1.1
